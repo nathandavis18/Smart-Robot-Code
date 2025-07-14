@@ -1,346 +1,309 @@
 #include <WiFi.h>
 #include <cmath>
-
 #include "MessageSerializer.h"
 #include "SmartRobotDtos.h"
 #include "MyString.h"
 
-#define RXD2 3  //The receiving pin for communication between the ESP32 and Uno board
-#define TXD2 40 //The transmission pin for communication between the ESP32 and Uno board
+#define RXD2 3
+#define TXD2 40
 
-const char* ssid = "SR_Test"; // Change to your laptop's hotspot name
-const char* pass = "srtest1234"; // Change to your hotspot's password
-IPAddress serverIp(192, 168, 137, 1); // Change to your laptop's hotspot IPv4 address
-const int serverPort = 1818; // The port you choose in Mobius (can leave unchanged)
-const int localPort = 100; // The port you want this robot to operate on
+constexpr char ssid[8] = "SR_Test";
+constexpr char pass[11] = "srtest1234";
 
 WiFiUDP udp;
+const IPAddress serverIp(192, 168, 137, 1);
+constexpr int serverPort = 1818;
+constexpr int localPort = 100;
+
 bool connected = false;
+bool standby = false;
 
-bool pathToSend = false;
-bool canSendToRobot = true;
-int currentPathIndex = 0;
-bool doneWithSegment = false;
-static long previousPathId = -1;
-static unsigned int currentPointId = 0;
-
+double lastX = 0, lastY = 0; //The last x and y positions the robot needs to go to before the assignment is finished
 sr::Attitude attitude{};
+
 sr::Position position{};
 sr::Velocity velocity{};
-sr::CurrentAssignment currentAssignment;
-sr::CurrentSegment currentSegment;
+
 sr::RobotMessageData robotMsgData;
-
 sr::MyVariant obj;
-MyString message;
-MyString receiveBuff;
-MyString msgFromRobot;
 
-void connectToWifi(){
-  //WiFi.config(staticIP);
-  WiFi.begin(ssid, pass);
+MyString message, receiveBuff;
 
-  delay(200);
-  if(WiFi.status() != WL_CONNECTED){
-    while (WiFi.status() != WL_CONNECTED); //Wait for it to connect before moving on
-  }
-  Serial.println(F("Wifi ready!"));
+void connectToWifi(void){
+    if(WiFi.status() == WL_CONNECTED) return;
+
+    WiFi.begin(ssid, pass);
+    delay(200);
+    while(WiFi.status() != WL_CONNECTED) ;
 }
 
-void startUdp(){
+void startConnectionToServer(void){
+    udp.begin(localPort);
 
-  udp.begin(localPort);
+    delay(100);
+    
+    sr::SmartRobotAsset asset;
+    sr::serialize<sr::SmartRobotAsset>(asset, message);
 
-  delay(500);
+    while(!connected){
+        udp.beginPacket(serverIp, serverPort);  
+        udp.print(message);
+        udp.endPacket();
 
-  Serial.println(F("Establishing connection with server . . ."));
-
-  delay(500);
-
-  sr::SmartRobotAsset asset;
-  sr::serialize<sr::SmartRobotAsset>(asset, message);
-  
-  while(!connected){
-    Serial.println(message);
-    udp.beginPacket(serverIp, serverPort);
-    udp.print(message);
-    udp.endPacket();
-
-    //Serial.println("Packet sent to server! Awaiting response . . .");
-    delay(500);
-
-    udp.parsePacket();
-    if(udp.available()){
-      udp.readString();
-      connected = true; //Connection with server made
-      Serial.println(F("Connection with server established!"));
+        delay(300);
+        udp.parsePacket();
+        if(udp.available()){
+            udp.readString();
+            connected = true;
+        }
     }
-    if(!connected){
-      delay(100);
-    }
-  }
-  message.clear();
+
+    message.clear();
 }
 
-void checkAndHandleNewAssignment(){
-  if(obj.pa.pathID != previousPathId){
+void handleMessageFromRobot(void){
+    bool success = sr::deserializeRobotMessage(receiveBuff, robotMsgData);
+
+    if(!success) return;
+
+    switch(robotMsgData.type){
+    case sr::MsgFromRobotType::Standby:
+        Serial.println(F("Received Standby"));
+        standby = true;
+        position.x = lastX;
+        position.y = lastY;
+
+        velocity.x = 0;
+        velocity.y = 0;
+        break;
+
+    case sr::MsgFromRobotType::Distance:
+        Serial.println(F("Received Distance"));
+        position.x += robotMsgData.distance * std::cos(attitude.yaw);
+        position.y += robotMsgData.distance * std::sin(attitude.yaw);
+        break;
+
+    default:
+        break;
+    }
+
+    receiveBuff.clear();
+    robotMsgData.clear();
+}
+
+void receiveFromRobot(void){
+    int x = Serial2.available();
+
+
+    char c = '\0';
+    while(x){
+        --x;
+        c = (char)Serial2.read();
+        if(c != '\n' && c != '\r' && c != '\x1b')
+            receiveBuff += c;
+
+        if(c == '\x1b' && receiveBuff.length()){
+            Serial.print("Received from robot: "); Serial.println(receiveBuff);
+            handleMessageFromRobot();
+            receiveBuff.clear();
+            robotMsgData.clear();
+            continue;
+        }
+    }
+
+    receiveBuff.clear();
+    robotMsgData.clear();
+}
+
+void sendAssignmentToRobot(void){
+    double vel, heading, xDiff, yDiff, distance;
+    double prevX = position.x, prevY = position.y;
+
+    for(uint8_t i = 1; i < obj.pa.waypoints.items(); ++i){
+        vel = obj.pa.waypoints[i].desiredVelocity;
+        heading = obj.pa.waypoints[i].heading;
+        xDiff = obj.pa.waypoints[i].point.x - prevX;
+        yDiff = obj.pa.waypoints[i].point.y - prevY;
+        prevX = obj.pa.waypoints[i].point.x;
+        prevY = obj.pa.waypoints[i].point.y;
+        distance = std::sqrt((xDiff * xDiff) + (yDiff * yDiff));
+        message += "{\"v\":";
+        message.concat(vel);
+
+        message += ",\"d\":";
+        message.concat(distance);
+
+        message += ",\"h\":";
+        message.concat(heading);
+
+        message.concat('}');
+
+        if(i < obj.pa.waypoints.items() - 1)
+            message.concat('~');
+        else
+            message.concat('\x1b');
+    }
+
+    lastX = obj.pa.waypoints.last().point.x;
+    lastY = obj.pa.waypoints.last().point.y;
+
+    Serial.print("Sending to robot: "); Serial.println(message);
+    Serial2.print(message);
+
+    message.clear();
+
+    attitude.yaw = obj.pa.waypoints.last().heading;
+    velocity.x = fabs(vel * std::cos(heading));
+    velocity.y = fabs(vel * std::sin(heading));
+    standby = false;
+}
+
+void sendReceivedToServer(void){
     message = "{Smart Robot,AssignmentReceived}";
     message += (int)obj.pa.pathID;
 
-    udp.beginPacket(serverIp, serverPort);
-    udp.print(message);
-    udp.endPacket();
+    int x = 0;
+    delay(500);
+    while(!x){
+        udp.beginPacket(serverIp, serverPort);
+        udp.print(message);
+        udp.endPacket();
 
-    delay(50);
+        delay(100);
 
-    udp.beginPacket(serverIp, serverPort);
-    udp.print(message);
-    udp.endPacket();
-
-    previousPathId = obj.pa.pathID;
-    currentPointId = obj.pa.waypoints[0].pointID;
+        udp.parsePacket();
+        x = udp.available();
+    }
 
     message.clear();
-  }
-  doneWithSegment = false;
 }
 
-void handleIncomingPacket(){
-  //Serial.println("Test");
-  udp.parsePacket();
-  int x = udp.available();
-  while(x){
-    receiveBuff += (char)udp.read();
-    --x;
-  }
-  if(receiveBuff.length()){
-    Serial.println(F("Handling packet"));
-    Serial.println(receiveBuff);
-    //Serial.println(receiveBuff);
-    sr::deserialize(receiveBuff, obj);
+void handleNewAssignment(void){
+    sendReceivedToServer();
 
-    if(obj.alternative == sr::MyVariant::alternative_t::none){
-      Serial.println(F("Null received"));
-      //Serial.println(receiveBuff);
-    }
-    else if(obj.alternative == sr::MyVariant::alternative_t::pathassignment){
-      Serial.println(F("PathAssignment received"));
-      //Serial.println(receiveBuff); //Just print the data for now
+    sendAssignmentToRobot();
 
-      currentPathIndex = 1;
-      checkAndHandleNewAssignment();
-      pathToSend = true;
+    obj.pa.waypoints.clear();
+}
+
+int udpAvailable = 0;
+void handleUdpPacket(void){
+    udp.parsePacket();
+
+    udpAvailable = udp.available();
+    if(!udpAvailable) return;
+
+    char c = '\0';
+    while(udpAvailable){
+        c = (char)udp.read();
+        if(c != '\x1b' && c != '\n' && c != '\r')
+            receiveBuff += c;
+        --udpAvailable;
     }
-    
-    message.clear();
+
+    if(receiveBuff.length()){
+        Serial.println(receiveBuff);
+        sr::deserialize(receiveBuff, obj);
+
+        switch(obj.alternative){
+        case sr::MyVariant::alternative_t::pathassignment:
+            handleNewAssignment();
+            break;
+
+        case sr::MyVariant::alternative_t::none:
+        default:
+            break;
+        }
+    }
+
     receiveBuff.clear();
-  }
 }
 
+unsigned long lastStandbyInterval = 0;
+unsigned long standbyInterval = 500;
+
+constexpr uint8_t dtoInterval = 100;
 unsigned long prevDtoInterval = 0;
-unsigned long currentDtoInterval;
-unsigned long sendDtoInterval = 200;
-bool sendAttitude = true;
-bool sendPosition = false;
-bool sendVelocity = false;
 
-void sendDtos(){
+enum class DtoToSend{
+    Position,
+    Attitude,
+    Velocity
+};
 
-  message.clear();
+DtoToSend dtoToSend = DtoToSend::Position;
 
-  if(doneWithSegment && robotMsgData.type == sr::MsgFromRobotType::Standby){
-    message = "{Smart Robot,StandbyMode}";
+void sendDtos(void){
+    unsigned long currentInterval = millis();
+
+    if(standby && currentInterval - lastStandbyInterval >= standbyInterval){
+        message = "{Smart Robot,StandbyMode}";
+        udp.beginPacket(serverIp, serverPort);
+        udp.print(message);
+        udp.endPacket();
+
+        message.clear();
+        delay(50);
+
+        lastStandbyInterval = millis();
+    }
+
+    currentInterval = millis();
+    if(currentInterval - prevDtoInterval < dtoInterval) return;
+
+    prevDtoInterval = currentInterval;
+
+    switch(dtoToSend){
+    case DtoToSend::Position:
+        //Serial.println(F("Sending Position"));
+        sr::serialize<sr::Position>(position, message);
+        dtoToSend = DtoToSend::Attitude;
+        break;
+
+    case DtoToSend::Attitude:
+        //Serial.println(F("Sending Attitude"));
+        sr::serialize<sr::Attitude>(attitude, message);
+        dtoToSend = DtoToSend::Velocity;
+        break;
+
+    case DtoToSend::Velocity:
+        //Serial.println(F("Sending Velocity"));
+        sr::serialize<sr::Velocity>(velocity, message);
+        dtoToSend = DtoToSend::Position;
+        break;
+    }
+
     delay(50);
-    udp.beginPacket(serverIp, serverPort);
-    udp.print(message);
-    udp.endPacket();
-    delay(50);
-  }
 
-  currentDtoInterval = millis();
-  if(currentDtoInterval - prevDtoInterval < sendDtoInterval) return;
-
-  if(sendAttitude){
-    sr::serialize<sr::Attitude>(attitude, message);
     udp.beginPacket(serverIp, serverPort);
     udp.print(message);
     udp.endPacket();
 
-    sendPosition = true;
-    sendAttitude = false;
-    
-    goto clearandreturn;
-  }
-  
-  if(sendPosition){
-    sr::serialize<sr::Position>(position, message);
-    udp.beginPacket(serverIp, serverPort);
-    udp.print(message);
-    udp.endPacket();
-    
-    sendPosition = false;
-    sendVelocity = true;
-    goto clearandreturn;
-  }
-
-  if(sendVelocity){
-    sr::serialize<sr::Velocity>(velocity, message);
-    udp.beginPacket(serverIp, serverPort);
-    udp.print(message);
-    udp.endPacket();
-
-    sendVelocity = false;
-    sendAttitude = true;
-    goto clearandreturn;
-  }
-
-clearandreturn:
-  message.clear();
-  prevDtoInterval = millis();
-  return;
+    message.clear();
 }
 
-void sendPathToRobot(){
-  if(!canSendToRobot) return;
-  if(currentPathIndex >= obj.pa.waypoints.items()) return;
+void setup(void){
+    Serial.begin(9600);
+    Serial2.begin(115200, SERIAL_8N1, RXD2, TXD2);
 
-  double vel = obj.pa.waypoints[currentPathIndex].desiredVelocity;
+    delay(500);
 
-  static double xDiff = obj.pa.waypoints[currentPathIndex].point.x - position.x;
-  static double yDiff = obj.pa.waypoints[currentPathIndex].point.y - position.y;
-
-  double distance = sqrt((xDiff * xDiff) + (yDiff * yDiff));
-
-  double heading = obj.pa.waypoints[currentPathIndex].heading;
-
-  message = "{\"v\":";
-  message.concat(vel);
-
-  message += ",\"d\":";
-  message.concat(distance);
-
-  message += ",\"h\":";
-  message.concat(heading);
-
-  message += "}";
-  delay(50);
-
-  bool received = false;
-  while(!received){
-    Serial2.print(message);
-    Serial.print("Sending message to robot: ");
-    Serial.println(message);
-
-    delay(100);
-    received = Serial2.available() > 0;
-    delay(50);
-  }
-
-  //Serial2.readStringUntil('\b');
-  
-  velocity.x = fabs(obj.pa.waypoints[currentPathIndex].desiredVelocity * cos(heading));
-  velocity.y = fabs(obj.pa.waypoints[currentPathIndex].desiredVelocity * sin(heading));
-
-  attitude.yaw = heading;
-
-  message.clear();
-  canSendToRobot = false;
-
-  ++currentPathIndex;
-}
-
-void handleRobotMessage(){
-  robotMsgData.type = sr::MsgFromRobotType::None;
-  //Serial.println(msgFromRobot);
-  if(msgFromRobot.length() && msgFromRobot[0] == '{'){
-    Serial.println(msgFromRobot);
-    sr::deserializeRobotMessage(msgFromRobot, robotMsgData);
-    if(robotMsgData.type == sr::MsgFromRobotType::Standby){
-      canSendToRobot = true;
-      if(obj.pa.waypoints.items() > 0 && currentPathIndex >= obj.pa.waypoints.items()){
-        position.x = obj.pa.waypoints[currentPathIndex - 1].point.x;
-        position.y = obj.pa.waypoints[currentPathIndex - 1].point.y;
-
-        pathToSend = false;
-        doneWithSegment = true;
-      }
-    }
-    else if(robotMsgData.type == sr::MsgFromRobotType::Distance){
-      position.x += robotMsgData.distance * cos(attitude.yaw);
-      position.y += robotMsgData.distance * sin(attitude.yaw);
-    }
-  }
-  msgFromRobot.clear();
-}
-
-void receiveFromRobot(){
-  //Serial.println(F("Listening for robot message"));
-  int x = Serial2.available();
-  static char c = '\0';
-  while(x){
-    //Serial.println("There is something here from the robot");
-    --x;
-    c = (char)Serial2.read();
-    //Serial.print(c);
-    if(c != '\n' && c != '\t' && c != '\r' && c != '\x1b')
-      msgFromRobot += c;
-
-    if(c == '\x1b') {
-      //Serial.println(msgFromRobot);
-      handleRobotMessage();
-      continue;
-    }
-  }
-}
-
-void setup() {
-  // put your setup code here, to run once:
-  Serial.begin(9600);
-  Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2);
-
-  delay(2000);
-
-  connectToWifi();
-
-  delay(100);
-
-  startUdp();
-
-  delay(100);
-}
-
-void loop() {
-  if(WiFi.status() == WL_CONNECTED){
-    if(connected){
-      receiveFromRobot();
-      handleIncomingPacket();
-      sendDtos();
-      if(pathToSend){
-        sendPathToRobot();
-      }
-      else{
-        velocity.x = 0;
-        velocity.y = 0;
-      }
-    }
-    else{
-      Serial.println(F("Connection Lost . . ."));
-      udp.stop();
-      delay(100);
-      startUdp();
-    }
-  }
-  else{
-    /*
-    Send Stop Command
-    */
-    udp.stop();
-    Serial.println(F("WiFi disconnected"));
-    Serial.println(F("Trying to reconnect"));
     connectToWifi();
-    delay(2000);
-    if(WiFi.status() == WL_CONNECTED){
-      startUdp();
+
+    startConnectionToServer();
+}
+
+void loop(void){
+    if(WiFi.status() != WL_CONNECTED || !connected){
+        udp.stop();
+        connected = false;
+        connectToWifi();
+        startConnectionToServer();
+        return;
     }
-  }
+
+    //Serial.println(F("Here we go again"));
+    sendDtos();
+    handleUdpPacket();
+    receiveFromRobot();
 }

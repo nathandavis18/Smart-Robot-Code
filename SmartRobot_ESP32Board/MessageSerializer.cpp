@@ -1,3 +1,5 @@
+#include <exception>
+
 #include "MessageSerializer.h"
 #include "Split.h"
 #include "MyString.h"
@@ -8,26 +10,35 @@ namespace sr{
   MyArray<MyString, 6> waypointParts;
   Waypoint wp;
 
-  void deserializeRobotMessage(const MyString& msg, RobotMessageData& outObj){
-    header = msg.substring(1, msg.indexOf('}') - 1);
+  bool deserializeRobotMessage(const MyString& msg, RobotMessageData& outObj){
+    try{
+      header = msg.substring(1, msg.indexOf('}') - 1);
 
-    split<2>(header, headerParts);
-    if(headerParts[1] == "Standby"){
-      outObj.type = MsgFromRobotType::Standby;
+      split<2>(header, headerParts);
+      if(headerParts.items() < 2){
+        goto clearandend;
+      }
+      
+      if(headerParts[1] == "Standby"){
+        outObj.type = MsgFromRobotType::Standby;
+      }
+      else if(headerParts[1] == "Distance"){
+        outObj.type = MsgFromRobotType::Distance;
+        other = msg.substring(msg.indexOf('}') + 1);
+        outObj.distance = other.toDouble();
+      }
+      else{
+        outObj.type == MsgFromRobotType::None;
+      }
+    clearandend:
+      headerParts.clear();
+      header.clear();
+      other.clear();
     }
-    else if(headerParts[1] == "Distance"){
-      outObj.type = MsgFromRobotType::Distance;
-      other = msg.substring(msg.indexOf('}') + 1);
-      outObj.distance = other.toDouble();
-    }
-    else{
-      outObj.type == MsgFromRobotType::None;
-    }
-    
-    headerParts.clear();
-    header.clear();
-    other.clear();
-  }
+    catch (std::exception ex) { return false; }
+
+    return true;
+}
 
   void deserializePathAssignment(const MyString& msg, PathAssignment& pa){
     pa.pathID = msg.substring(0, msg.indexOf(',')).toInt();

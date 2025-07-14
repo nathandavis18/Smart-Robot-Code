@@ -13,12 +13,17 @@ namespace sr{
   enum class MsgFromRobotType{
     Standby,
     Distance,
+    Driving,
     None
   };
 
   struct RobotMessageData{
     MsgFromRobotType type = MsgFromRobotType::None;
     double distance;
+    void clear() {
+      distance = 0;
+      type = MsgFromRobotType::None;
+    }
   };
 
   void serializeWaypoints(const PathAssignment& obj, MyString& outMsg);
@@ -70,7 +75,7 @@ namespace sr{
     }
   }
 
-  void deserializeRobotMessage(const MyString& msg, RobotMessageData& outObj);
+  bool deserializeRobotMessage(const MyString& msg, RobotMessageData& outObj);
 }
 
 #endif //MessageSerializer

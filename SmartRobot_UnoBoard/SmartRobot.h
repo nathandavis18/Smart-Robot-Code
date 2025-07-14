@@ -3,8 +3,6 @@
 
 #include <Arduino.h>
 #include "DeviceDrivers.h"
-#include "MPU6050_getdata.h"
-#include "Point3.h"
 
 class SmartRobot{
 public:
@@ -14,14 +12,11 @@ public:
 
   void updateMotion(float speed, float distance);
   void updateAngle(float newHeading);
-  void calibrateGyro(void);
-  float getHeading(void);
-  void setActualHeading(float heading);
-  void setActualPos(Point3 newPos);
   void getSerialData(void);
   void updateDistanceData(void);
   void updateDistanceLeft(void);
   void sendDistanceMoved(bool forced = false);
+  void startCommand(void);
 
 public:
   bool isMoving = false;
@@ -41,14 +36,12 @@ private:
 
 private:
   float _currentHeading;
-  Point3 _currentPos;
   SmartRobotMode _mode;
-  MPU6050_getdata _mpu6050;
   DeviceDriver_Motor _motorControl;
   DeviceDriver_Voltage _voltageControl;
   DeviceDriver_Key _keyControl;
 
-  static constexpr float angleEpsilon = 0.5;
+  static constexpr float angleEpsilon = 10;
 };
 
 #endif //_SmartRobot
