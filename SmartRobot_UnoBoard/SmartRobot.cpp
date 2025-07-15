@@ -245,7 +245,7 @@ int getTime(float currentHeading, float newHeading){
 
 	float diff = fabs(newHeading - currentHeading);
 
-	return diff * 50 / 9;
+	return diff * 60 / 9;
 }
 
 void SmartRobot::updateRobotAngle(bool rightDirection, bool leftDirection, float headingToFace) {

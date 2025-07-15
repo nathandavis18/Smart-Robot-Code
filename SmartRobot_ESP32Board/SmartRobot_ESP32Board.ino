@@ -119,7 +119,7 @@ void sendAssignmentToRobot(void){
     double vel, heading, xDiff, yDiff, distance;
     double prevX = position.x, prevY = position.y;
 
-    for(uint8_t i = 1; i < obj.pa.waypoints.items(); ++i){
+    for(uint8_t i = 0; i < obj.pa.waypoints.items(); ++i){
         vel = obj.pa.waypoints[i].desiredVelocity;
         heading = obj.pa.waypoints[i].heading;
         xDiff = obj.pa.waypoints[i].point.x - prevX;
