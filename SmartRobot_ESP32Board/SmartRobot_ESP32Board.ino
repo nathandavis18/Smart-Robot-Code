@@ -7,8 +7,8 @@
 #define RXD2 3
 #define TXD2 40
 
-constexpr char ssid[8] = "SR_Test";
-constexpr char pass[11] = "srtest1234";
+constexpr char ssid[] = "SR_Test";
+constexpr char pass[] = "srtest1234";
 
 WiFiUDP udp;
 const IPAddress serverIp(192, 168, 137, 1);
