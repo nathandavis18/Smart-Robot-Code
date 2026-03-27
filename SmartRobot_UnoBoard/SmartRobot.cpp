@@ -1,269 +1,377 @@
 #include "SmartRobot.h"
-#include "ArduinoJson-v6.11.1.h"
-#include "MyArray.h"
-#include "MyString.h"
+#include "Array.h"
+#include "EmbeddedString.h"
+#include "JsonDict.h"
 
-using ARDUINOJSON_NAMESPACE::StaticJsonDocument;
-
-MyString<30> message;
-float distanceLeft = 0;
-float currentVelocity = 0;
-float currentDistanceMoved = 0;
-unsigned long lastDistanceInterval = 0;
-
-
-SmartRobot::SmartRobot(void) : _mode(SmartRobotMode::Standby), _currentHeading(0) {}
-
-struct Command {
-	float velocity, distance, heading;
-	Command(float v, float d, float h) : velocity(v), distance(d), heading(h) {}
-	Command() : velocity(0), distance(0), heading(0) {}
-};
-
-sr::MyArray<Command, 15> commands;
-
-void sendStandbyMode(void) {
-	Serial.println(F("{Smart Robot,Standby}\x1b"));
-	delay(50);
-}
-
-void sendReceived(void) {
-	Serial.println(F("\x1b"));
-	delay(50);
-}
-
-float getDegrees(float radians) {
-	float degrees = radians * 180 / 3.14;
-
-	while(degrees >= 360.0) degrees -= 360.0;
-	while(degrees <= -360.0) degrees += 360.0;
-
-	if(degrees > 180){
-		degrees = -180 + (degrees - 180);
-	}
-	if(degrees < -180){
-		degrees = 180 + (degrees + 180);
+namespace helpers
+{
+	constexpr float get_degrees(const float radians)
+	{
+		return radians * 180 / 3.14;
 	}
 
-	return degrees;
-}
-
-float getRadians(float degrees){
-	return degrees * 3.14 / 180;
-}
-
-void SmartRobot::SmartRobotInit() {
-	Serial.begin(115200);
-	_voltageControl.VoltageInit();
-	_motorControl.MotorInit();
-	_keyControl.KeyInit();
-
-	_currentHeading = 0;
-	_mode = SmartRobotMode::Standby;
-}
-
-uint8_t commandsIndex = 0;
-
-MyString<600> buffer = "";
-String splitData = "";
-void SmartRobot::getSerialData() {
-	if (_mode == SmartRobotMode::Unknown || _mode == SmartRobotMode::Estop) return;
-
-	char c = "";
-	int x = Serial.available();
-	while (x) {
-		c = Serial.read();
-		if (c != '\n' && c != ' ' && c != '\t' && c != '\r')
-			buffer += c;
-		--x;
-		if (c == '\x1b') break;
+	constexpr float get_radians(const float degrees)
+	{
+		return degrees * 3.14 / 180;
 	}
 
-	static int strIndex = 0;
-	static Command currentCommand;
-	if (c == '\x1b' && buffer[0] == '{') {
-		commands.clear();
-		StaticJsonDocument<200> doc;
-		while (strIndex < buffer.length()) {
-			while (buffer.charAt(strIndex) != '~' && buffer.charAt(strIndex) != '\x1b') {
-				splitData += buffer.charAt(strIndex);
-				++strIndex;
+	bool should_spin_clockwise(const float currentHeading, const float newHeading)
+	{
+		if (currentHeading <= 0)
+		{
+			if (newHeading < 0)
+				return newHeading < currentHeading;
+			return newHeading > (currentHeading + 180);
+		}
+
+		if (newHeading <= 0)
+		{
+			return newHeading > (currentHeading - 180);
+		}
+
+		return newHeading < currentHeading;
+	}
+
+	int get_rotation_time(const float currentHeading, const float newHeading)
+	{
+		static constexpr float timePerDegree = 60.0 / 9.0;
+		if((currentHeading < 0 && newHeading < 0) || (currentHeading >= 0 && newHeading >= 0))
+		{
+			return static_cast<int>(fabs(currentHeading - newHeading) * timePerDegree);
+		}
+
+		if (currentHeading < 0)
+		{
+			if (should_spin_clockwise(currentHeading, newHeading))
+			{
+				float rotationAmount = 180 - fabs(currentHeading);
+				return static_cast<int>((180 - (newHeading - rotationAmount)) * timePerDegree);
 			}
-			deserializeJson(doc, splitData);
-			currentCommand.velocity = doc["v"];
-			currentCommand.distance = doc["d"];
-			currentCommand.heading = getDegrees(doc["h"]);
-
-			doc.clear();
-			splitData = "";
-			commands.insert(currentCommand);
-			++strIndex;
+			return static_cast<int>((newHeading + fabs(currentHeading)) * timePerDegree);
 		}
 
-		buffer.clear();
-		sendReceived();
-		strIndex = 0;
-		_mode = SmartRobotMode::Moving;
-
-		commandsIndex = 0;
-		startCommand();
-
-
+		if (should_spin_clockwise(currentHeading, newHeading))
+		{
+			return static_cast<int>(fabs(newHeading - currentHeading) * timePerDegree);
+		}
+		float rotationAmount = 180 - currentHeading;
+		return static_cast<int>((180 - fabs(newHeading + rotationAmount)) * timePerDegree);
 	}
-	else if (buffer.length() && buffer[0] != '{') buffer.clear();
-}
 
-bool awaitingCommand = true;
-
-void SmartRobot::startCommand() {
-	if (commandsIndex >= commands.items()) return;
-
-	distanceLeft = fabs(commands[commandsIndex].distance);
-	currentVelocity = fabs(commands[commandsIndex].velocity);
-
-	updateAngle(commands.at(commandsIndex).heading);
-	lastDistanceInterval = millis();
-	if(commands.at(commandsIndex).distance > 0)
-		updateMotion(currentVelocity, distanceLeft);
-
-	++commandsIndex;
-	isMoving = true;
-	awaitingCommand = false;
-}
-
-unsigned long currentInterval;
-unsigned long timeDiff;
-constexpr uint8_t minTimeDiff = 5;
-
-void SmartRobot::updateDistanceData() {
-	currentInterval = millis();
-	timeDiff = currentInterval - lastDistanceInterval;
-	if(timeDiff < minTimeDiff) return;
-
-	currentDistanceMoved = currentVelocity * (timeDiff / 1000.0) * 10;
-
-	lastDistanceInterval = currentInterval;
-
-	updateDistanceLeft();
-
-	if (!awaitingCommand) {
-		sendDistanceMoved();
+	bool angle_is_same(const float currentHeading, const float newHeading, const float epsilon)
+	{
+		return fabs(currentHeading - newHeading) <= epsilon;
 	}
-	else {
-		if (commandsIndex < commands.items()) {
+}
+namespace sr
+{
+	// These are the string buffers to use for different things. Pre-allocated memory, so no memory overflows
+	static TinyString sendBuffer;
+	static DefaultString receiveBuffer;
+	static JsonString splitDataBuffer;
+
+	// The array of segments to execute
+	static uint8_t currentSegmentIndex = 0;
+	static MyArray<SmartRobot::Command, 15> segments;
+
+	// Some timer variables to track distance updates
+	static unsigned long lastDistanceUpdateTime = 0;
+	static unsigned long currentInterval;
+	static unsigned long timeDiff;
+
+	void send_message()
+	{
+		sendBuffer.concat('?');
+		Serial.print(sendBuffer.c_str());
+		sendBuffer.clear();
+	}
+
+	void send_standby_mode()
+	{
+		sendBuffer = "{Smart Robot,Standby}";
+		send_message();
+		delay(50);
+	}
+
+	SmartRobot::SmartRobot() : _mode(SmartRobotMode::Standby), _currentHeading(0), _currentVelocity(0) {}
+
+	void SmartRobot::SmartRobotInit()
+	{
+		Serial.begin(115200);
+		_voltageControl.VoltageInit();
+		_motorControl.MotorInit();
+		_keyControl.KeyInit();
+	}
+
+	void SmartRobot::handle_incoming_data()
+	{
+		if (_mode == SmartRobotMode::Unknown || _mode == SmartRobotMode::Estop) return;
+
+		char c = 0;
+		int x = Serial.available();
+		while (x--)
+		{
+			c = Serial.read();
+			if (c == '?')
+			{
+				send_message();
+				break;
+			}
+
+			if (c != '\n' && c != ' ' && c != '\t' && c != '\r')
+				receiveBuffer += c;
+		}
+
+		if (c == '?' && receiveBuffer.char_at(0) == '{')
+		{
+			segments.clear();
+
+			int strIndex = 0;
+			MyDictionary dict;
+
+			while(strIndex < receiveBuffer.length())
+			{
+				while (strIndex < receiveBuffer.length() && receiveBuffer.char_at(strIndex) != '~')
+				{
+					splitDataBuffer += receiveBuffer.char_at(strIndex);
+					++strIndex;
+				}
+
+				parse_json(splitDataBuffer, dict);
+
+				int type = dict.contains_key("type") ? static_cast<int>(dict["type"]) : 1;
+				if (type == 0)
+				{
+					const float distanceMoved = _currentVelocity * (timeDiff / 1000.0) * 5;
+					stopRobot();
+					sendDistanceMoved(distanceMoved);
+					receiveBuffer.clear();
+					dict.clear();
+					splitDataBuffer.clear();
+					return;
+				}
+
+				Command currentCommand;
+				currentCommand.velocity = dict["v"];
+				currentCommand.heading = dict["h"];
+				currentCommand.distance = dict["d"];
+
+				dict.clear();
+				splitDataBuffer.clear();
+
+				if (type == 1)
+				{
+					currentCommand.heading = helpers::get_degrees(currentCommand.heading);
+					segments.insert_back(currentCommand);
+					++strIndex;
+				}
+				else if (type == 2)
+				{
+					receiveBuffer.clear();
+					executeTeleopCommand(currentCommand);
+				}
+			}
+
+			receiveBuffer.clear();
+			send_message();
+
+			currentSegmentIndex = 0;
+			if (segments.size() > 0)
+				startCommand();
+		}
+		else if (receiveBuffer.length() && receiveBuffer.char_at(0) != '{') 
+			receiveBuffer.clear();
+	}
+
+	static float teleopDistance = 0;
+	static const float teleopEpsilon = 0.5;
+	void SmartRobot::executeTeleopCommand(const Command& command)
+	{
+		if (command.distance == 0 && fabs(command.heading) < teleopEpsilon)
+		{
 			stopRobot();
-			startCommand();		
+			sendDistanceMoved(teleopDistance);
+			teleopDistance = 0;
+			return;
 		}
-		else{
-			stopRobot();
-			delay(10);
-			_mode = SmartRobotMode::Standby;
-			delay(50);
-			sendStandbyMode();
 
-			distanceLeft = 0;
-			currentDistanceMoved = 0;
-			commands.clear();
-			commandsIndex = 0;
-			isMoving = false;
-			awaitingCommand = true;
+		int16_t speedUnits = 0;
+		if (fabs(command.velocity) > teleopEpsilon)
+			speedUnits = fabs(command.velocity) / 100 * 255;
+		if (speedUnits > 255)
+			speedUnits = 255;
+
+		_currentVelocity = speedUnits / 35 * static_cast<int>(command.distance);
+
+		moveFromTeleop(speedUnits, command.heading, command.distance > 0);
+		teleopDistance += (millis() - lastDistanceUpdateTime) / 1000.0 * _currentVelocity / 3;
+		lastDistanceUpdateTime = millis();
+		if (fabs(teleopDistance) > 0.05)
+		{
+			sendDistanceMoved(teleopDistance);
+			teleopDistance = 0;
 		}
 	}
-}
 
-unsigned long lastDistanceMovedInterval = 0;
-unsigned long distanceMovedInterval = 50;
-float distanceMovedSinceLastSend = 0;
-unsigned long currentTime;
-unsigned long distanceTimeDiff;
-
-void SmartRobot::sendDistanceMoved(bool forced) {
-	distanceMovedSinceLastSend += currentDistanceMoved;
-
-	currentTime = millis();
-	distanceTimeDiff = currentTime - lastDistanceMovedInterval;
-	if (distanceTimeDiff < distanceMovedInterval && !forced) return;
-
-
-	message = "{Smart Robot,Distance}";
-	message.concat(distanceMovedSinceLastSend);
-	message.concat('\x1b');
-	Serial.println(message);
-
-	message.clear();
-	distanceMovedSinceLastSend = 0;
-	lastDistanceMovedInterval = millis();
-}
-
-void SmartRobot::updateDistanceLeft() {
-	distanceLeft -= currentDistanceMoved;
-
-	if (distanceLeft <= 0)
-		awaitingCommand = true;
-}
-
-bool getRotationDir(float currentHeading, float newHeading) { //True is counter-clockwise
-	if (newHeading < 0 && currentHeading > 0)
-		return newHeading < (180.0 - currentHeading);
-
-	if (newHeading > 0 && currentHeading < 0)
-		return newHeading > (180.0 + currentHeading);
-
-	return newHeading > currentHeading;
-
-}
-
-void SmartRobot::updateAngle(float newHeading) {
-	if (_currentHeading == newHeading) return;
-
-	if(fabs(_currentHeading - newHeading) <= angleEpsilon) return;
-
-	if (getRotationDir(_currentHeading, newHeading)) { //Go counter clock-wise
-		updateRobotAngle(true, false, newHeading);
-	}
-	else {
-		updateRobotAngle(false, true, newHeading);
-	}
-
-	_currentHeading = newHeading;
-}
-
-void SmartRobot::updateMotion(float speed, float distance) {
-	uint16_t speedUnits = speed * 35;
-	if (speedUnits > 255) speedUnits = 255;
-
-	moveRobot(speedUnits);
-}
-
-int getTime(float currentHeading, float newHeading){
-	if(newHeading < 0 && currentHeading > 0){
-		newHeading += 360;
-	}
-	else if(newHeading > 0 && currentHeading < 0){
-		newHeading -= 360.0;
+	void SmartRobot::moveFromTeleop(int16_t speedUnits, const float turnRate, bool forward)
+	{
+		bool turnDirection = turnRate > 0;
+		if (speedUnits == 0)
+		{
+			speedUnits = 150 * (fabs(turnRate) / 100);
+			if (turnDirection)
+			{
+				_motorControl.setMotorControl(false, speedUnits, true, speedUnits);
+				_currentHeading -= speedUnits / 10;
+			}
+			else
+			{
+				_motorControl.setMotorControl(true, speedUnits, false, speedUnits);
+				_currentHeading += speedUnits / 10;
+			}
+		}
+		else
+		{
+			float turnOffset = 1;
+			if (fabs(turnRate) > teleopEpsilon)
+				turnOffset += fabs(turnRate) / 100;
+			if (forward)
+			{
+				if (turnDirection)
+				{
+					_motorControl.setMotorControl(true, speedUnits / turnOffset, true, speedUnits);
+					if (turnOffset > 1)
+						_currentHeading -= speedUnits / 30 * turnOffset;
+				}
+				else
+				{
+					_motorControl.setMotorControl(true, speedUnits, true, speedUnits / turnOffset);
+					if (turnOffset > 1)
+						_currentHeading += speedUnits / 30 * turnOffset;
+				}
+			}
+			else
+			{
+				if (turnDirection)
+				{
+					_motorControl.setMotorControl(false, speedUnits / turnOffset, false, speedUnits);
+					if (turnOffset > 1)
+						_currentHeading -= speedUnits / 30 * turnOffset;
+				}
+				else
+				{
+					_motorControl.setMotorControl(false, speedUnits, false, speedUnits / turnOffset);
+					if (turnOffset > 1)
+						_currentHeading -= speedUnits / 30 * turnOffset;
+				}
+			}
+		}
+		if (_currentHeading < -180) _currentHeading += 360;
+		else if (_currentHeading > 180) _currentHeading -= 360;
 	}
 
-	float diff = fabs(newHeading - currentHeading);
+	void SmartRobot::startCommand()
+	{
+		if (currentSegmentIndex >= segments.size()) return;
 
-	return diff * 60 / 9;
-}
+		_currentVelocity = fabs(segments.at(currentSegmentIndex).velocity);
+		updateAngle(segments.at(currentSegmentIndex).heading);
+		lastDistanceUpdateTime = millis();
+		if (segments.at(currentSegmentIndex).distance > 0)
+			updateMotion(_currentVelocity);
 
-void SmartRobot::updateRobotAngle(bool rightDirection, bool leftDirection, float headingToFace) {
-	int time = getTime(_currentHeading, headingToFace);
+		isMoving = true;
+	}
 
-	_motorControl.setMotorControl(rightDirection, 100, leftDirection, 100);
+	void SmartRobot::updateDistanceData()
+	{
+		delay(3);
+		if (segments.at(currentSegmentIndex).distance <= 0)
+		{
+			if (++currentSegmentIndex < segments.size())
+			{
+				startCommand();
+			}
+			else
+			{
+				stopRobot();
+				delay(10);
+				_mode = SmartRobotMode::Standby;
+				delay(50);
+				send_standby_mode();
+				segments.clear();
+				currentSegmentIndex = 0;
+				isMoving = false;
+			}
+			return;
+		}
 
-	long curTime = millis();
-	while(millis() - curTime < time) {}
+		_currentVelocity = segments.at(currentSegmentIndex).velocity;
+		currentInterval = millis();
+		timeDiff = currentInterval - lastDistanceUpdateTime;
 
- 	stopRobot();
-	delay(50);
-}
+		const float distanceMoved = _currentVelocity * (timeDiff / 1000.0) * 5;
+		segments.at(currentSegmentIndex).distance -= distanceMoved;
+		lastDistanceUpdateTime = currentInterval;
 
-void SmartRobot::moveRobot(uint8_t speed, bool forward) {
-	_motorControl.setMotorControl(forward, speed, forward, speed);
-}
+		sendDistanceMoved(distanceMoved);
+	}
 
-void SmartRobot::stopRobot() {
-	_motorControl.setMotorControl(false, 0, false, 0);
+	void SmartRobot::sendDistanceMoved(const float distance)
+	{
+		sendBuffer = "{Smart Robot,Distance}";
+		sendBuffer.concat(distance);
+		sendBuffer.concat(',');
+		sendBuffer.concat(_currentVelocity);
+		sendBuffer.concat(',');
+		sendBuffer.concat(helpers::get_radians(_currentHeading));
+		send_message();
+	}
+
+	void SmartRobot::updateAngle(float newHeading)
+	{
+		if (helpers::angle_is_same(_currentHeading, newHeading, angleEpsilon))
+			return;
+		if (helpers::should_spin_clockwise(_currentHeading, newHeading))
+		{
+			updateRobotAngle(false, true, newHeading);
+		}
+		else
+		{
+			updateRobotAngle(true, false, newHeading);
+		}
+		_currentHeading = newHeading;
+	}
+
+	void SmartRobot::updateMotion(float speed)
+	{
+		uint16_t speedUnits = speed * 35;
+		if (speedUnits > 255) speedUnits = 255;
+
+		moveRobot(speedUnits);
+	}
+
+	void SmartRobot::updateRobotAngle(bool rightDirection, bool leftDirection, float headingToFace)
+	{
+		int time = helpers::get_rotation_time(_currentHeading, headingToFace);
+		_motorControl.setMotorControl(rightDirection, 100, leftDirection, 100);
+
+		long curTime = millis();
+		while (millis() - curTime < time);
+
+		stopRobot();
+		delay(50);
+	}
+
+	void SmartRobot::moveRobot(uint8_t speed, bool forward)
+	{
+		_motorControl.setMotorControl(forward, speed, forward, speed);
+	}
+
+	void SmartRobot::stopRobot()
+	{
+		isMoving = false;
+		_currentVelocity = 0;
+		_motorControl.setMotorControl(false, 0, false, 0);
+	}
 }

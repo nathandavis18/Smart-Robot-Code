@@ -1,168 +1,213 @@
-#include <exception>
-
 #include "MessageSerializer.h"
 #include "Split.h"
-#include "MyString.h"
 
-namespace sr{
-  MyString header, other;
-  MyArray<MyString, 2> headerParts;
-  MyArray<MyString, 6> waypointParts;
-  Waypoint wp;
+namespace sr
+{
+	DefaultString other;
+	MyArray<SplitsString, 2> headerParts;
+	MyArray<SplitsString, 6> waypointParts;
+	MyArray<SplitsString, 3> distanceParts;
+	MyArray<SplitsString, 3> teleopParts;
+	Waypoint wp;
 
-  bool deserializeRobotMessage(const MyString& msg, RobotMessageData& outObj){
-    try{
-      header = msg.substring(1, msg.indexOf('}') - 1);
+	bool deserializeRobotMessage(const DefaultString& msg, RobotMessageData& outObj)
+	{
+		try
+		{
+			split<2>(msg.substring<HeaderString>(1, msg.indexOf('}') - 1), headerParts);
+			if (headerParts.size() < 2)
+			{
+				outObj.clear();
+				goto clearandend;
+			}
 
-      split<2>(header, headerParts);
-      if(headerParts.items() < 2){
-        goto clearandend;
-      }
-      
-      if(headerParts[1] == "Standby"){
-        outObj.type = MsgFromRobotType::Standby;
-      }
-      else if(headerParts[1] == "Distance"){
-        outObj.type = MsgFromRobotType::Distance;
-        other = msg.substring(msg.indexOf('}') + 1);
-        outObj.distance = other.toDouble();
-      }
-      else{
-        outObj.type == MsgFromRobotType::None;
-      }
-    clearandend:
-      headerParts.clear();
-      header.clear();
-      other.clear();
-    }
-    catch (std::exception ex) { return false; }
+			if (headerParts[1] == "Standby")
+			{
+				outObj.type = MsgFromRobotType::Standby;
+			}
+			else if (headerParts[1] == "Distance")
+			{
+				outObj.type = MsgFromRobotType::Distance;
+				other = msg.substring<DefaultString>(msg.indexOf('}') + 1);
+				split<3>(other.substring<HeaderString>(0), distanceParts);
+				outObj.distance = distanceParts[0].toFloat();
+				outObj.velocity = distanceParts[1].toFloat();
+				outObj.heading = distanceParts[2].toFloat();
+			}
+			else
+			{
+				outObj.clear();
+			}
+		clearandend:
+			distanceParts.clear();
+			headerParts.clear();
+			other.clear();
+		}
+		catch (...) { return false; }
 
-    return true;
-}
+		return true;
+	}
 
-  void deserializePathAssignment(const MyString& msg, PathAssignment& pa){
-    pa.pathID = msg.substring(0, msg.indexOf(',')).toInt();
+	void deserializePathAssignment(const DefaultString& msg, PathAssignment& pa)
+	{
+		SplitsString part = msg.substring<SplitsString>(0, msg.indexOf(','));
+		pa.pathID = part.toInt();
 
-    unsigned int currentIndex = msg.indexOf(',') + 1;
-    while(currentIndex < msg.length()){
-      if(msg.charAt(currentIndex) == '['){
-        split<6>(msg.substring(currentIndex, msg.indexOf(']', currentIndex) - currentIndex), waypointParts);
+		unsigned int currentIndex = msg.indexOf(',') + 1;
+		while (currentIndex < msg.length())
+		{
+			if (msg.char_at(currentIndex) == '[')
+			{
+				split<6>(msg.substring<HeaderString>(currentIndex, msg.indexOf(']', currentIndex) - currentIndex), waypointParts);
 
-        wp.pointID = waypointParts[0].toInt();
-        wp.desiredVelocity = waypointParts[1].toDouble();
-        wp.point.x = waypointParts[2].toDouble();
-        wp.point.y = waypointParts[3].toDouble();
-        wp.point.z = waypointParts[4].toDouble();
-        wp.heading = waypointParts[5].toDouble();
+				wp.pointID = waypointParts[0].toInt();
+				wp.desiredVelocity = waypointParts[1].toFloat();
+				wp.point.x = waypointParts[2].toFloat();
+				wp.point.y = waypointParts[3].toFloat();
+				wp.point.z = waypointParts[4].toFloat();
+				wp.heading = waypointParts[5].toFloat();
 
-        pa.waypoints.insert(wp);
+				pa.waypoints.insert_back(wp);
 
-        currentIndex = msg.indexOf(']', currentIndex);
-        waypointParts.clear();
-      }
-      ++currentIndex;
-    }
-    waypointParts.clear();
-  }
+				currentIndex = msg.indexOf(']', currentIndex);
+				waypointParts.clear();
+			}
+			++currentIndex;
+		}
+		waypointParts.clear();
+	}
 
-  void deserialize(const MyString& msg, MyVariant& outObj){
-    header = msg.substring(1, msg.indexOf('}') - 1);
-    
-    split<2>(header, headerParts);
+	void deserializeTeleopCommand(const DefaultString& msg, TeleopCommand& outObj)
+	{
+		split<3>(msg.substring<HeaderString>(0), teleopParts);
+		if (teleopParts.size() == 3)
+		{
+			outObj.velocity = teleopParts[0].toFloat();
+			outObj.turnRate = teleopParts[1].toFloat();
+			outObj.direction = teleopParts[2].toInt();
+		}
+		teleopParts.clear();
+	}
 
-    if(headerParts[1] == "PathAssignment"){
-      other = msg.substring(msg.indexOf('}') + 1);
+	void deserialize(const DefaultString& msg, MyVariant& outObj)
+	{
+		if (msg.length() > 0)
+			split<2>(msg.substring<HeaderString>(1, msg.indexOf('}') - 1), headerParts);
 
-      outObj.alternative = MyVariant::alternative_t::pathassignment;
-      outObj.pa.waypoints.clear();
-      deserializePathAssignment(other, outObj.pa);
-    }
-    else{
-      outObj.alternative = MyVariant::alternative_t::none;
-    }
-    headerParts.clear();
-    header.clear();
-    other.clear();
-  }
+		if (headerParts[1] == "PathAssignment")
+		{
+			outObj.value.pa = PathAssignment();
+			other = msg.substring<DefaultString>(msg.indexOf('}') + 1);
 
-  void serializeWaypoints(const PathAssignment& obj, MyString& outMsg){
-      const Waypoint* wp = nullptr;
-      outMsg = "{Smart Robot,PathAssignment}";
-      outMsg += (int)obj.pathID;
-      for (unsigned int i = 0; i < obj.waypoints.items(); ++i) {
-		  wp = &obj.waypoints.at(i);
+			outObj.alternative = MyVariant::alternative_t::pathassignment;
+			deserializePathAssignment(other, outObj.value.pa);
+		}
+		else if (headerParts[1] == "ClearAssignment")
+		{
+			outObj.alternative = MyVariant::alternative_t::stop;
+		}
+		else if (headerParts[1] == "TeleopCommand")
+		{
+			outObj.value.tc = TeleopCommand();
+			other = msg.substring<DefaultString>(msg.indexOf('}') + 1);
 
-          outMsg += ",[";
-          outMsg += (int)wp->pointID;
-          outMsg += ",";
-          outMsg += wp->desiredVelocity;
-          outMsg += ",";
-          outMsg += wp->point.x;
-          outMsg += ",";
-          outMsg += wp->point.y;
-          outMsg += ",";
-          outMsg += wp->point.z;
-          outMsg += ",";
-          outMsg += wp->heading;
-          outMsg += "]";
-      }
-  }
+			outObj.alternative = MyVariant::alternative_t::teleop;
+			deserializeTeleopCommand(other, outObj.value.tc);
+		}
+		else
+		{
+			outObj.alternative = MyVariant::alternative_t::none;
+		}
+		headerParts.clear();
+		other.clear();
+	}
 
-  void serializeAsset(const SmartRobotAsset& obj, MyString& outMsg){
-      outMsg = "{Smart Robot,SmartRobotAsset}";
-	  outMsg += obj.name;
-	  outMsg += ",";
-      outMsg += obj.front;
-      outMsg += ",";
-      outMsg += obj.back;
-      outMsg += ",";
-      outMsg += obj.left;
-      outMsg += ",";
-      outMsg += obj.right;
-      outMsg += ",";
-      outMsg += obj.height;
-  }
+	void serializeWaypoints(const PathAssignment& obj, DefaultString& outMsg)
+	{
+		const Waypoint* wp = nullptr;
+		outMsg = "{Smart Robot,PathAssignment}";
+		outMsg += (int)obj.pathID;
+		for (unsigned int i = 0; i < obj.waypoints.size(); ++i)
+		{
+			wp = &obj.waypoints.at(i);
 
-  void serializeVelocity(const Velocity& obj, MyString& outMsg){
-      outMsg = "{Smart Robot,Velocity}";
-      outMsg += obj.x;
-      outMsg += ",";
-      outMsg += obj.y;
-      outMsg += ",";
-      outMsg += obj.z;
-      outMsg += ",";
-      outMsg += obj.rollRate;
-      outMsg += ",";
-      outMsg += obj.pitchRate;
-      outMsg += ",";
-      outMsg += obj.yawRate;
-  }
+			outMsg += ",[";
+			outMsg += (int)wp->pointID;
+			outMsg += ",";
+			outMsg += wp->desiredVelocity;
+			outMsg += ",";
+			outMsg += wp->point.x;
+			outMsg += ",";
+			outMsg += wp->point.y;
+			outMsg += ",";
+			outMsg += wp->point.z;
+			outMsg += ",";
+			outMsg += wp->heading;
+			outMsg += "]";
+		}
+	}
 
-  void serializePosition(const Position& obj, MyString& outMsg){
-      outMsg = "{Smart Robot,Position}";
-      outMsg += obj.x;
-      outMsg += ",";
-      outMsg += obj.y;
-      outMsg += ",";
-      outMsg += obj.z;
-  }
+	void serializeAsset(const SmartRobotAsset& obj, DefaultString& outMsg)
+	{
+		outMsg = "{Smart Robot,SmartRobotAsset}";
+		outMsg += obj.name;
+		outMsg += ",";
+		outMsg += obj.front;
+		outMsg += ",";
+		outMsg += obj.back;
+		outMsg += ",";
+		outMsg += obj.left;
+		outMsg += ",";
+		outMsg += obj.right;
+		outMsg += ",";
+		outMsg += obj.height;
+	}
 
-  void serializeAttitude(const Attitude& obj, MyString& outMsg){
-      outMsg = "{Smart Robot,Attitude}";
-      outMsg += obj.roll;
-      outMsg += ",";
-      outMsg += obj.pitch;
-      outMsg += ",";
-      outMsg += obj.yaw;
-  }
+	void serializeVelocity(const Velocity& obj, DefaultString& outMsg)
+	{
+		outMsg = "{Smart Robot,Velocity}";
+		outMsg += obj.x;
+		outMsg += ",";
+		outMsg += obj.y;
+		outMsg += ",";
+		outMsg += obj.z;
+		outMsg += ",";
+		outMsg += obj.rollRate;
+		outMsg += ",";
+		outMsg += obj.pitchRate;
+		outMsg += ",";
+		outMsg += obj.yawRate;
+	}
 
-  void serializeCurrentAssignment(const CurrentAssignment& obj, MyString& outMsg){
-    outMsg = "{Smart Robot,CurrentAssignment}";
-    outMsg += (int)obj.pathID;
-  }
+	void serializePosition(const Position& obj, DefaultString& outMsg)
+	{
+		outMsg = "{Smart Robot,Position}";
+		outMsg += obj.x;
+		outMsg += ",";
+		outMsg += obj.y;
+		outMsg += ",";
+		outMsg += obj.z;
+	}
 
-  void serializeCurrentSegment(const CurrentSegment& obj, MyString& outMsg){
-    outMsg = "{Smart Robot,CurrentSegment}";
-    outMsg += (int)obj.pointID;
-  }
+	void serializeAttitude(const Attitude& obj, DefaultString& outMsg)
+	{
+		outMsg = "{Smart Robot,Attitude}";
+		outMsg += obj.roll;
+		outMsg += ",";
+		outMsg += obj.pitch;
+		outMsg += ",";
+		outMsg += obj.yaw;
+	}
+
+	void serializeCurrentAssignment(const CurrentAssignment& obj, DefaultString& outMsg)
+	{
+		outMsg = "{Smart Robot,CurrentAssignment}";
+		outMsg += (int)obj.pathID;
+	}
+
+	void serializeCurrentSegment(const CurrentSegment& obj, DefaultString& outMsg)
+	{
+		outMsg = "{Smart Robot,CurrentSegment}";
+		outMsg += (int)obj.pointID;
+	}
 }

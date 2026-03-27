@@ -1,37 +1,41 @@
-#ifndef _DeviceDrivers
-#define _DeviceDrivers
-
+#ifndef _DeviceDrivers_
+#define _DeviceDrivers_
 #include <stdint.h>
 
-class DeviceDriver_Key{
-public:
-  void KeyInit(void);
+namespace sr
+{
+	class DeviceDriver_Key
+	{
+	public:
+		void KeyInit();
 
 #define PIN_KEY 2
 #define KEYVALUE_MAX 4
 
-  static uint8_t keyValue;
-};
+		static uint8_t keyValue;
+	};
 
-class DeviceDriver_Voltage{
-public:
-  void VoltageInit(void);
-  float getAnalogue(void);
+	class DeviceDriver_Voltage
+	{
+	public:
+		void VoltageInit();
+		float getAnalogue();
 
-private:
-  #define PIN_A3  (17)
-  static constexpr uint8_t A3 = PIN_A3;
-  #define PIN_VOLTAGE A3
-};
+	private:
+#define PIN_A3  (17)
+		static constexpr uint8_t A3 = PIN_A3;
+#define PIN_VOLTAGE A3
+	};
 
-class DeviceDriver_Motor{
-public:
-  void MotorInit(void);
+	class DeviceDriver_Motor
+	{
+	public:
+		void MotorInit();
 
-  // For the direction, false means reverse, true means forward
-  void setMotorControl(bool leftDirection, uint8_t leftSpeed, bool rightDirection, uint8_t rightSpeed);
+		// For the direction, false means reverse, true means forward
+		void setMotorControl(bool leftDirection, uint8_t leftSpeed, bool rightDirection, uint8_t rightSpeed);
 
-private:
+	private:
 #define PIN_MOTOR_PWMA 5
 #define PIN_MOTOR_PWMB 6
 
@@ -40,11 +44,11 @@ private:
 
 #define PIN_MOTOR_STBY 3
 
-public:
+	public:
 #define SPEED_MAX 255
 #define DIR_FORWARD true
 #define DIR_BACKWARD false
 #define DIRECTION_VOID 3
-};
-
-#endif //_DeviceDrivers
+	};
+}
+#endif

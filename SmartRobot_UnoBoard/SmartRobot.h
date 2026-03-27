@@ -1,47 +1,60 @@
-#ifndef _SmartRobot
-#define _SmartRobot
-
+#ifndef _SmartRobot_
+#define _SmartRobot_
 #include <Arduino.h>
 #include "DeviceDrivers.h"
 
-class SmartRobot{
-public:
-  SmartRobot(void);
+namespace sr
+{
+	class SmartRobot
+	{
+	public:
+		struct Command
+		{
+			float velocity, distance, heading;
+			Command(float v, float d, float h) : velocity(v), distance(d), heading(h) {}
+			Command() : velocity(0), distance(0), heading(0) {}
+		};
+	public:
+		SmartRobot(void);
 
-  void SmartRobotInit(void);
+		void SmartRobotInit();
 
-  void updateMotion(float speed, float distance);
-  void updateAngle(float newHeading);
-  void getSerialData(void);
-  void updateDistanceData(void);
-  void updateDistanceLeft(void);
-  void sendDistanceMoved(bool forced = false);
-  void startCommand(void);
+		void updateMotion(float speed);
+		void updateAngle(float newHeading);
+		void handle_incoming_data(void);
+		void updateDistanceData(void);
+		void sendDistanceMoved(const float distance);
+		void startCommand(void);
 
-public:
-  bool isMoving = false;
+	public:
+		bool isMoving = false;
 
-private:
-  enum SmartRobotMode{
-    Standby,
-    Moving,
-    Estop,
-    Unknown
-  };
+	private:
+		enum class SmartRobotMode
+		{
+			Standby,
+			Moving,
+			Estop,
+			Unknown
+		};
 
-private:
-  void updateRobotAngle(bool leftDirection, bool rightDirection, float headingToFace);
-  void moveRobot(uint8_t speed, bool forward = true);
-  void stopRobot();
+	private:
+		void updateRobotAngle(bool leftDirection, bool rightDirection, float headingToFace);
+		void moveRobot(uint8_t speed, bool forward = true);
+		void stopRobot();
+		void executeTeleopCommand(const Command& command);
+		void moveFromTeleop(int16_t speedUnits, const float turnRate, bool forward);
 
-private:
-  float _currentHeading;
-  SmartRobotMode _mode;
-  DeviceDriver_Motor _motorControl;
-  DeviceDriver_Voltage _voltageControl;
-  DeviceDriver_Key _keyControl;
+	private:
+		float _currentHeading;
+		float _currentVelocity;
 
-  static constexpr float angleEpsilon = 10;
-};
+		SmartRobotMode _mode;
+		DeviceDriver_Motor _motorControl;
+		DeviceDriver_Voltage _voltageControl;
+		DeviceDriver_Key _keyControl;
 
-#endif //_SmartRobot
+		static constexpr float angleEpsilon = 3.0f;
+	};
+}
+#endif

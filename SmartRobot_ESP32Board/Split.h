@@ -1,37 +1,40 @@
-#ifndef mSplit
-#define mSplit
+#pragma once
 #pragma warning(disable : 4996)
 
-#include "MyString.h"
-#include "MyArray.h"
+#include "EmbeddedString.h"
+#include "Array.h"
 
-namespace sr{
-  template<unsigned int size>
-  void split(const MyString& data, MyArray<MyString, size>& arr, char delimiter = ','){
-      unsigned int currentPos = 0;
-      if (data.charAt(currentPos) == '[' || data.charAt(currentPos) == '{')
-          ++currentPos;
-      
-      unsigned int dataBegin = currentPos;
-      while (currentPos < data.length()) {
-		  currentPos = data.indexOf(delimiter, currentPos);
+namespace sr
+{
+	template<unsigned int size>
+	void split(const HeaderString& data, MyArray<SplitsString, size>& arr, const char delimiter = ',')
+	{
+		unsigned int currentPos = 0;
+		if (data.char_at(currentPos) == '[' || data.char_at(currentPos) == '{')
+			++currentPos;
 
-          if (currentPos != dataBegin && currentPos < data.length()) {
-              arr.insert(data.substring(dataBegin, currentPos - dataBegin));
-              ++currentPos;
-              dataBegin = currentPos; // Move past the delimiter
-          }
-      }
+		unsigned int dataBegin = currentPos;
+		while (currentPos < data.length())
+		{
+			currentPos = data.indexOf(delimiter, currentPos);
 
-	  currentPos = data.length();
-      if(data.charAt(data.length() - 1) == ']' || data.charAt(data.length() - 1) == '}') {
-		  currentPos = data.length() - 1;
-	  }
+			if (currentPos != dataBegin && currentPos < data.length())
+			{
+				arr.insert_back(data.substring<SplitsString>(dataBegin, currentPos - dataBegin));
+				++currentPos;
+				dataBegin = currentPos; // Move past the delimiter
+			}
+		}
 
-      if (currentPos != dataBegin) {
-		  arr.insert(data.substring(dataBegin, currentPos - dataBegin));
-      }
-  }
+		currentPos = data.length();
+		if (data.char_at(data.length() - 1) == ']' || data.char_at(data.length() - 1) == '}')
+		{
+			currentPos = data.length() - 1;
+		}
+
+		if (currentPos != dataBegin)
+		{
+			arr.insert_back(data.substring<SplitsString>(dataBegin, currentPos - dataBegin));
+		}
+	}
 }
-
-#endif //mSplit
